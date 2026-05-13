@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
-import re
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -101,16 +101,16 @@ def parse_migration_request(request: str, project: str | None = None) -> ParsedM
     patterns = [
         re.compile(
             r"(?:请把|請把|把|将|將)\s*(?P<project>\S+)\s*(?:这个|這個)?(?:项目|專案|project)?"
-            r"\s*从\s*(?P<source>[\w.-]+)\s*(?:迁移|移植|切换|改|升级|轉移|轉換)"
-            r"\s*(?:到|为|成|至)\s*(?P<target>[\w.-]+)",
+            r"\s*从\s*(?P<source>[A-Za-z0-9_.-]+)\s*(?:迁移|移植|切换|改|升级|轉移|轉換)"
+            r"\s*(?:到|为|成|至)\s*(?P<target>[A-Za-z0-9_.-]+)",
             re.IGNORECASE,
         ),
         re.compile(
-            r"migrate\s+(?P<project>\S+)\s+from\s+(?P<source>[\w.-]+)\s+to\s+(?P<target>[\w.-]+)",
+            r"migrate\s+(?P<project>\S+)\s+from\s+(?P<source>[A-Za-z0-9_.-]+)\s+to\s+(?P<target>[A-Za-z0-9_.-]+)",
             re.IGNORECASE,
         ),
         re.compile(
-            r"(?P<project>\S+)\s+.*?\bfrom\s+(?P<source>[\w.-]+)\s+\bto\s+(?P<target>[\w.-]+)",
+            r"(?P<project>\S+)\s+.*?\bfrom\s+(?P<source>[A-Za-z0-9_.-]+)\s+\bto\s+(?P<target>[A-Za-z0-9_.-]+)",
             re.IGNORECASE,
         ),
     ]
@@ -126,11 +126,27 @@ def parse_migration_request(request: str, project: str | None = None) -> ParsedM
     if project:
         pair_patterns = [
             re.compile(
-                r"(?:从|由)\s*(?P<source>[\w.-]+)\s*(?:迁移|移植|切换|改|升级|轉移|轉換)"
-                r"\s*(?:到|为|成|至)\s*(?P<target>[\w.-]+)",
+                r"(?:从|由)\s*(?P<source>[A-Za-z0-9_.-]+)\s*(?:迁移|移植|切换|改|升级|轉移|轉換)"
+                r"\s*(?:到|为|成|至)\s*(?P<target>[A-Za-z0-9_.-]+)",
                 re.IGNORECASE,
             ),
-            re.compile(r"\bfrom\s+(?P<source>[\w.-]+)\s+\bto\s+(?P<target>[\w.-]+)", re.IGNORECASE),
+            re.compile(
+                r"(?:把|将|將)?\s*(?P<source>[A-Za-z0-9_.-]+)\s*"
+                r"(?:迁移|移植|切换|替换|换|改|升级|轉移|轉換)"
+                r"\s*(?:到|为|成|至|為)?\s*(?P<target>[A-Za-z0-9_.-]+)",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"(?:用|使用|依赖|依賴)\s*(?P<source>[A-Za-z0-9_.-]+).*?"
+                r"(?:迁移|移植|切换|替换|换|改|升级|轉移|轉換)"
+                r"\s*(?:到|为|成|至|為)?\s*(?P<target>[A-Za-z0-9_.-]+)",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"(?P<source>[A-Za-z0-9_.-]+)\s*(?:->|=>|→)\s*(?P<target>[A-Za-z0-9_.-]+)",
+                re.IGNORECASE,
+            ),
+            re.compile(r"\bfrom\s+(?P<source>[A-Za-z0-9_.-]+)\s+\bto\s+(?P<target>[A-Za-z0-9_.-]+)", re.IGNORECASE),
         ]
         for pattern in pair_patterns:
             match = pattern.search(text)
