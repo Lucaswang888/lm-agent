@@ -534,6 +534,8 @@ def _run_migration_request(
     args.extend(["--pig-report", str(pig_report)])
     args.extend(["--strict-report", str(strict_report)])
     args.append("--strict-static-check")
+    if resolved_model := _default_migration_model():
+        args.extend(["--model", resolved_model])
     if mode == "command":
         args.append("--yolo")
         return {
@@ -576,6 +578,14 @@ def _run_migration_request(
     if result.stderr:
         output = f"{output}\n\n[stderr]\n{result.stderr}"
     return {"returncode": result.returncode, "output": output}
+
+
+def _default_migration_model() -> str | None:
+    if value := os.getenv("MSWEA_MIGRATION_MODEL_NAME"):
+        return value
+    if os.getenv("DEEPSEEK_API_KEY"):
+        return "deepseek/deepseek-chat"
+    return None
 
 
 def _get_job(jobs: dict[str, MigrationJob], jobs_lock: threading.Lock, job_id: str) -> MigrationJob | None:
