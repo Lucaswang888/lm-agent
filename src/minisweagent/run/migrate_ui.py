@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Local browser UI for natural-language library migration requests."""
+"""Local browser UI for library migration requests."""
 
 from __future__ import annotations
 
@@ -71,6 +71,11 @@ HTML_PAGE = """<!doctype html>
       grid-template-columns: 1fr auto;
       gap: 10px;
       align-items: center;
+    }
+    .library-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
     }
     textarea {
       min-height: 120px;
@@ -149,13 +154,14 @@ HTML_PAGE = """<!doctype html>
       body { padding: 18px; }
       .status { grid-template-columns: 1fr; }
       .path-row { grid-template-columns: 1fr; }
+      .library-row { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
 <main>
   <h1>Library Migration Agent</h1>
-    <p>只需要提供仓库文件夹位置和自然语言迁移指令。页面会生成 Agent 任务和可执行命令，避免浏览器长时间等待模型调用。</p>
+    <p>只需要提供仓库文件夹位置、原库和目标库。页面会生成 Agent 任务和可执行命令，避免浏览器长时间等待模型调用。</p>
 
   <form id="form">
     <label for="project">仓库文件夹位置</label>
@@ -165,9 +171,17 @@ HTML_PAGE = """<!doctype html>
     </div>
     <div class="hint">可以手动输入路径，也可以点击“浏览文件夹”打开本机文件夹选择窗口。</div>
 
-    <label for="request">迁移指令</label>
-    <textarea id="request" name="request">请把这个项目从 Flask 迁移到 Quart。</textarea>
-    <div class="hint">自然语言即可，例如“请把这个项目从 Flask 迁移到 Quart”。</div>
+    <div class="library-row">
+      <div>
+        <label for="source">原库</label>
+        <input id="source" name="source" value="flask">
+      </div>
+      <div>
+        <label for="target">目标库</label>
+        <input id="target" name="target" value="quart">
+      </div>
+    </div>
+    <div class="hint">例如原库填 httplib2，目标库填 requests。</div>
 
     <div class="actions">
       <button id="preview" type="submit" name="mode" value="preview">预览 Agent 任务</button>
@@ -495,20 +509,26 @@ def _run_migration_request(
     set_active_job_id: Callable[[str | None], None],
 ) -> dict[str, object]:
     project = _field(form, "project")
-    request = _field(form, "request")
+    source = _field(form, "source")
+    target = _field(form, "target")
     if not project:
         return {"returncode": 2, "output": "请输入仓库文件夹位置。"}
-    if not request:
-        return {"returncode": 2, "output": "请输入自然语言迁移指令。"}
+    if not source:
+        return {"returncode": 2, "output": "请输入原库。"}
+    if not target:
+        return {"returncode": 2, "output": "请输入目标库。"}
 
     mode = _field(form, "mode")
     args = [
         sys.executable,
         "-m",
-        "minisweagent.run.migrate_chat",
-        request,
+        "minisweagent.run.migrate",
         "--project",
         project,
+        "--source",
+        source,
+        "--target",
+        target,
     ]
     pig_report, strict_report = _default_report_paths(project)
     args.extend(["--pig-report", str(pig_report)])
@@ -549,7 +569,7 @@ def _run_migration_request(
             output = f"{output}\n\n[stderr]\n{exc.stderr}"
         output = (
             f"{output}\n\nMigration process timed out after 15 minutes. "
-            "The request may be waiting on a model/API configuration or a long-running test."
+            "The migration may be waiting on a model/API configuration or a long-running test."
         )
         return {"returncode": 124, "output": output}
     output = result.stdout
