@@ -131,96 +131,6 @@ HTML_PAGE = """<!doctype html>
       background: #334155;
       white-space: nowrap;
     }
-    .modal {
-      position: fixed;
-      inset: 0;
-      display: grid;
-      place-items: center;
-      background: rgba(15, 23, 42, 0.42);
-      padding: 18px;
-      z-index: 10;
-    }
-    .modal[hidden] {
-      display: none;
-    }
-    .folder-panel {
-      width: min(860px, 100%);
-      max-height: 82vh;
-      display: grid;
-      grid-template-rows: auto auto 1fr auto;
-      border-radius: 8px;
-      background: #ffffff;
-      box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25);
-      overflow: hidden;
-    }
-    .folder-header,
-    .folder-toolbar,
-    .folder-footer {
-      padding: 14px 16px;
-      border-bottom: 1px solid #e2e8f0;
-    }
-    .folder-header {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: center;
-      font-weight: 750;
-    }
-    .folder-toolbar {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .folder-toolbar button,
-    .folder-footer button {
-      padding: 9px 12px;
-      font-size: 14px;
-    }
-    .folder-path {
-      padding: 10px 16px;
-      background: #f8fafc;
-      border-bottom: 1px solid #e2e8f0;
-      color: #475569;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      overflow-wrap: anywhere;
-    }
-    .folder-list {
-      min-height: 220px;
-      overflow: auto;
-      padding: 8px;
-    }
-    .folder-item {
-      width: 100%;
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: center;
-      border: 0;
-      border-radius: 6px;
-      background: transparent;
-      color: #1f2937;
-      padding: 10px 12px;
-      text-align: left;
-      font-weight: 600;
-    }
-    .folder-item:hover {
-      background: #eef2ff;
-    }
-    .folder-empty,
-    .folder-error {
-      padding: 18px;
-      color: #64748b;
-    }
-    .folder-error {
-      color: #b91c1c;
-    }
-    .folder-footer {
-      display: flex;
-      justify-content: flex-end;
-      gap: 10px;
-      border-top: 1px solid #e2e8f0;
-      border-bottom: 0;
-    }
     pre {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
@@ -253,7 +163,7 @@ HTML_PAGE = """<!doctype html>
       <input id="project" name="project" value="demo_projects/flask_weather_api">
       <button id="browse" class="secondary" type="button">浏览文件夹</button>
     </div>
-    <div class="hint">可以手动输入路径，也可以点击“浏览文件夹”从本机选择项目目录。</div>
+    <div class="hint">可以手动输入路径，也可以点击“浏览文件夹”打开本机文件夹选择窗口。</div>
 
     <label for="request">迁移指令</label>
     <textarea id="request" name="request">请把这个项目从 Flask 迁移到 Quart。</textarea>
@@ -278,41 +188,14 @@ HTML_PAGE = """<!doctype html>
   <pre id="output">等待运行。</pre>
 </main>
 
-<div id="folder-modal" class="modal" hidden>
-  <div class="folder-panel" role="dialog" aria-modal="true" aria-labelledby="folder-title">
-    <div class="folder-header">
-      <div id="folder-title">选择仓库文件夹</div>
-      <button id="folder-close" class="secondary" type="button">关闭</button>
-    </div>
-    <div class="folder-toolbar">
-      <button id="folder-workspace" class="secondary" type="button">工作区</button>
-      <button id="folder-home" class="secondary" type="button">Home</button>
-      <button id="folder-desktop" class="secondary" type="button">Desktop</button>
-      <button id="folder-up" class="secondary" type="button">上一级</button>
-    </div>
-    <div id="folder-path" class="folder-path"></div>
-    <div id="folder-list" class="folder-list"></div>
-    <div class="folder-footer">
-      <button id="folder-cancel" class="secondary" type="button">取消</button>
-      <button id="folder-select" type="button">选择当前文件夹</button>
-    </div>
-  </div>
-</div>
-
 <script>
 const form = document.getElementById("form");
 const buttons = [...document.querySelectorAll("button[type='submit']")];
 const output = document.getElementById("output");
 const projectInput = document.getElementById("project");
-const folderModal = document.getElementById("folder-modal");
-const folderPath = document.getElementById("folder-path");
-const folderList = document.getElementById("folder-list");
 let submitter = "preview";
 let currentJobId = null;
 let pollTimer = null;
-let browsePath = "";
-let browseParent = "";
-let browseShortcuts = {};
 buttons.forEach((button) => {
   button.addEventListener("click", () => { submitter = button.value; });
 });
@@ -350,78 +233,25 @@ document.getElementById("stop").addEventListener("click", async () => {
   output.textContent += "\\n\\n停止请求已发送。";
 });
 
-document.getElementById("browse").addEventListener("click", () => {
-  folderModal.hidden = false;
-  loadFolder(projectInput.value || "");
-});
-document.getElementById("folder-close").addEventListener("click", closeFolderBrowser);
-document.getElementById("folder-cancel").addEventListener("click", closeFolderBrowser);
-document.getElementById("folder-select").addEventListener("click", () => {
-  projectInput.value = browsePath;
-  closeFolderBrowser();
-});
-document.getElementById("folder-up").addEventListener("click", () => {
-  if (browseParent) loadFolder(browseParent);
-});
-document.getElementById("folder-workspace").addEventListener("click", () => {
-  if (browseShortcuts.workspace) loadFolder(browseShortcuts.workspace);
-});
-document.getElementById("folder-home").addEventListener("click", () => {
-  if (browseShortcuts.home) loadFolder(browseShortcuts.home);
-});
-document.getElementById("folder-desktop").addEventListener("click", () => {
-  if (browseShortcuts.desktop) loadFolder(browseShortcuts.desktop);
-});
-
-function closeFolderBrowser() {
-  folderModal.hidden = true;
-}
-
-async function loadFolder(path) {
-  folderList.innerHTML = '<div class="folder-empty">正在读取文件夹...</div>';
-  const query = new URLSearchParams({path});
+document.getElementById("browse").addEventListener("click", async () => {
+  const browseButton = document.getElementById("browse");
+  browseButton.disabled = true;
+  browseButton.textContent = "选择中...";
   try {
-    const response = await fetch(`/browse?${query.toString()}`);
+    const response = await fetch("/choose-folder", {method: "POST"});
     const data = await response.json();
-    browseShortcuts = data.shortcuts || browseShortcuts;
-    browseParent = data.parent || "";
-    if (data.path) folderPath.textContent = data.path;
     if (data.error) {
-      folderList.innerHTML = `<div class="folder-error">${escapeHtml(data.error)}</div>`;
+      output.textContent = data.error;
       return;
     }
-    browsePath = data.path;
-    folderPath.textContent = browsePath;
-    renderFolderEntries(data.entries || []);
+    if (data.path) projectInput.value = data.path;
   } catch (error) {
-    folderList.innerHTML = `<div class="folder-error">${escapeHtml(String(error))}</div>`;
+    output.textContent = String(error);
+  } finally {
+    browseButton.disabled = false;
+    browseButton.textContent = "浏览文件夹";
   }
-}
-
-function renderFolderEntries(entries) {
-  if (!entries.length) {
-    folderList.innerHTML = '<div class="folder-empty">当前文件夹下没有可浏览的子文件夹。</div>';
-    return;
-  }
-  folderList.innerHTML = "";
-  for (const entry of entries) {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = "folder-item";
-    item.innerHTML = `<span>${escapeHtml(entry.name)}</span><span>›</span>`;
-    item.addEventListener("click", () => loadFolder(entry.path));
-    folderList.appendChild(item);
-  }
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
+});
 
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
@@ -502,10 +332,6 @@ def _handler_factory(cwd: Path) -> type[BaseHTTPRequestHandler]:
                     return
                 self._send_json(job.snapshot())
                 return
-            if parsed.path == "/browse":
-                query = parse_qs(parsed.query)
-                self._send_json(_browse_directory(_first(query, "path"), cwd))
-                return
             if parsed.path not in {"/", "/index.html"}:
                 self.send_error(404)
                 return
@@ -521,6 +347,9 @@ def _handler_factory(cwd: Path) -> type[BaseHTTPRequestHandler]:
                     self._send_json(job.snapshot())
                 else:
                     self._send_json({"status": "missing", "phase": "queued", "output": "任务不存在。"})
+                return
+            if parsed.path == "/choose-folder":
+                self._send_json(_choose_folder(cwd))
                 return
             if parsed.path != "/run":
                 self.send_error(404)
@@ -764,78 +593,53 @@ def _timestamp() -> str:
     return datetime.now().strftime("[%H:%M:%S]")
 
 
-def _browse_directory(path_value: str, cwd: Path) -> dict[str, object]:
-    path = _resolve_browse_path(path_value, cwd)
-    shortcuts = _browse_shortcuts(cwd)
-    if not path.exists():
-        return {
-            "error": f"文件夹不存在：{path}",
-            "path": str(path),
-            "parent": str(path.parent),
-            "entries": [],
-            "shortcuts": shortcuts,
-        }
-    if path.is_file():
-        path = path.parent
-    if not path.is_dir():
-        return {
-            "error": f"不是文件夹：{path}",
-            "path": str(path),
-            "parent": str(path.parent),
-            "entries": [],
-            "shortcuts": shortcuts,
-        }
+def _choose_folder(cwd: Path) -> dict[str, object]:
+    if sys.platform == "darwin":
+        return _choose_folder_macos(cwd)
+    return _choose_folder_tkinter(cwd)
+
+
+def _choose_folder_macos(cwd: Path) -> dict[str, object]:
+    script = (
+        'POSIX path of (choose folder with prompt '
+        '"选择要迁移的项目文件夹" default location '
+        f'(POSIX file "{_escape_applescript(str(cwd.resolve()))}" as alias))'
+    )
     try:
-        resolved = path.resolve()
-        entries = [
-            {"name": child.name, "path": str(child.resolve())}
-            for child in resolved.iterdir()
-            if child.is_dir() and not child.name.startswith(".")
-        ]
-    except PermissionError:
-        return {
-            "error": f"没有权限读取这个文件夹：{path}",
-            "path": str(path),
-            "parent": str(path.parent),
-            "entries": [],
-            "shortcuts": shortcuts,
-        }
-    except OSError as exc:
-        return {
-            "error": f"读取文件夹失败：{exc}",
-            "path": str(path),
-            "parent": str(path.parent),
-            "entries": [],
-            "shortcuts": shortcuts,
-        }
-    entries.sort(key=lambda entry: str(entry["name"]).lower())
-    return {
-        "path": str(resolved),
-        "parent": str(resolved.parent) if resolved.parent != resolved else "",
-        "entries": entries,
-        "shortcuts": shortcuts,
-    }
+        result = subprocess.run(["osascript", "-e", script], check=False, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return {"error": "选择文件夹超时，请重新点击浏览文件夹。"}
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout).strip()
+        if "User canceled" in message or "用户已取消" in message:
+            return {"cancelled": True}
+        return {"error": f"无法打开系统文件夹选择窗口：{message or 'unknown error'}"}
+    path = result.stdout.strip().rstrip("/")
+    if not path:
+        return {"cancelled": True}
+    return {"path": path}
 
 
-def _resolve_browse_path(path_value: str, cwd: Path) -> Path:
-    if not path_value:
-        return cwd
-    expanded = Path(path_value).expanduser()
-    if expanded.is_absolute():
-        return expanded
-    return cwd / expanded
+def _choose_folder_tkinter(cwd: Path) -> dict[str, object]:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        return {"error": f"当前环境不能打开系统文件夹选择窗口：{exc}"}
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        path = filedialog.askdirectory(initialdir=str(cwd.resolve()), title="选择要迁移的项目文件夹")
+    finally:
+        root.destroy()
+    if not path:
+        return {"cancelled": True}
+    return {"path": path}
 
 
-def _browse_shortcuts(cwd: Path) -> dict[str, str]:
-    home = Path.home()
-    shortcuts = {
-        "workspace": str(cwd.resolve()),
-        "home": str(home),
-    }
-    desktop = home / "Desktop"
-    if desktop.exists():
-        shortcuts["desktop"] = str(desktop)
-    return shortcuts
+def _escape_applescript(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _default_report_paths(project: str) -> tuple[Path, Path]:
