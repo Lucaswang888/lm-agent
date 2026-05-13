@@ -463,6 +463,10 @@ class MigrationJob:
                 lowered = line.lower()
                 if "pig-style migration context" in lowered or "code slices prepared" in lowered:
                     self._phase("pig")
+                if "building migration agent config" in lowered:
+                    self._phase("agent")
+                if "automatic repair pass" in lowered:
+                    self._set("running", "agent", "Strict check 未通过，Agent 自动进入修复回合。")
                 if "migration static/api verification" in lowered:
                     self._phase("verify")
             returncode = self.process.wait()
@@ -534,6 +538,7 @@ def _run_migration_request(
     args.extend(["--pig-report", str(pig_report)])
     args.extend(["--strict-report", str(strict_report)])
     args.append("--strict-static-check")
+    args.extend(["--auto-repair-attempts", "1"])
     if resolved_model := _default_migration_model():
         args.extend(["--model", resolved_model])
     if mode == "command":

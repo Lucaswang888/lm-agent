@@ -105,10 +105,10 @@ def _source_aliases(tree: ast.Module, source: str) -> dict[str, str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == source or alias.name.startswith(f"{source}."):
+                if _module_matches_source(alias.name, source):
                     aliases[alias.asname or alias.name.split(".", 1)[0]] = alias.name
         elif isinstance(node, ast.ImportFrom) and node.module:
-            if node.module == source or node.module.startswith(f"{source}."):
+            if _module_matches_source(node.module, source):
                 for alias in node.names:
                     if alias.name == "*":
                         continue
@@ -154,12 +154,12 @@ class _OccurrenceVisitor(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            if alias.name == self.source or alias.name.startswith(f"{self.source}."):
+            if _module_matches_source(alias.name, self.source):
                 self._add(node, alias.name, alias.name, "import")
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if node.module and (node.module == self.source or node.module.startswith(f"{self.source}.")):
+        if node.module and _module_matches_source(node.module, self.source):
             for alias in node.names:
                 self._add(node, alias.name, f"{node.module}.{alias.name}", "import-from")
         self.generic_visit(node)
@@ -216,6 +216,12 @@ def _expr_name(node: ast.AST) -> str | None:
         base = _expr_name(node.value)
         return f"{base}.{node.attr}" if base else node.attr
     return None
+
+
+def _module_matches_source(module: str, source: str) -> bool:
+    module_lower = module.lower()
+    source_lower = source.lower()
+    return module_lower == source_lower or module_lower.startswith(f"{source_lower}.")
 
 
 def _dedupe_occurrences(occurrences: list[ApiOccurrence]) -> list[ApiOccurrence]:

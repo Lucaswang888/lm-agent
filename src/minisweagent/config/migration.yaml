@@ -30,6 +30,7 @@ agent:
     - Do not assume the prompt contains all PIG details. Call the helper commands to retrieve current project evidence when needed.
     - After a PIG helper command succeeds, immediately continue with another bash command: inspect files, edit files, run tests, or run verification. Never respond with prose-only analysis after helper output.
     - If a helper command fails because of unsupported options, retry the same helper with only the options shown in the task prompt.
+    - Quote package version specifiers in shell commands, for example `pip install 'quart>=0.19'`; unquoted `>` can create stray files.
     - Every response must include at least one bash tool call.
     - Do not finish until the migration is verified or a blocker is proven with command output.
   step_limit: 0

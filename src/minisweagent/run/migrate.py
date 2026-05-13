@@ -16,6 +16,7 @@ from minisweagent.agents import get_agent
 from minisweagent.config import builtin_config_dir, get_config_from_spec
 from minisweagent.environments import get_environment
 from minisweagent.migration.context import api_changes_from_pymigbench, build_pig_context, render_pig_prompt_summary
+from minisweagent.migration.pig_models import PigContext
 from minisweagent.migration.verification import VerificationReport, verify_project_migration
 from minisweagent.models import get_model
 from minisweagent.run.utilities.config import configure_if_first_time
@@ -175,6 +176,7 @@ def build_migration_task(
     pymigbench_examples: list[dict[str, Any]] | None = None,
     strategy: str = "default",
     pig_context: str | None = None,
+    agent_automation_context: str | None = None,
     pig_report: Path | None = None,
     strict_static_check: bool = False,
     strict_report: Path | None = None,
@@ -183,11 +185,12 @@ def build_migration_task(
     hints = _format_pymigbench_hints(pymigbench_data or {})
     examples = _format_pymigbench_examples(pymigbench_examples or [])
     pig_section = f"\n{pig_context}\n" if pig_context else ""
+    automation_section = f"\n{agent_automation_context}\n" if agent_automation_context else ""
     strict_lines = ""
     if strict_static_check:
         report_line = f" The harness will write the JSON report to `{strict_report}`." if strict_report else ""
         strict_lines = (
-            "\nStrict API-level verification is enabled after the agent exits."
+            "\nStrict API-level verification and one automatic repair pass are enabled after the agent exits."
             f"{report_line} Use every PIG/PyMigBench checklist item as a hard requirement, not as optional context.\n"
         )
     compatibility_notes = _format_compatibility_notes(source, target)
@@ -220,6 +223,7 @@ Compatibility notes:
 
 {examples}
 {pig_section}
+{automation_section}
 PIG automation notes:
 - PIG-style steps are available as agent-callable helper commands, not only as prompt text.
 - Use discovery, slices, candidates, and verification during the migration when the project evidence is unclear.
@@ -232,12 +236,14 @@ Required outcome:
 - Update imports, API calls, dependency declarations, tests, documentation snippets, and configuration only when they are relevant to the migration.
 - Treat the priority scope as the starting point, not a hard file limit.
 - Use the PIG helper tools as needed for API discovery, code slicing, target candidate lookup, and static/API verification.
+- The precomputed migration plan is the first pass. Expand it with helper tools when it misses files or APIs.
 - Treat every PyMigBench file and code_change entry as a mandatory migration checklist item.
 - When an API checklist item includes exact source/target patterns, remove the source pattern and make the target pattern appear unless you have an explicit compatibility reason.
 - Before finishing, inspect every PyMigBench file listed above and confirm all listed target APIs/patterns are present and relevant source APIs/patterns are gone.
 - Always inspect common dependency declaration files such as pyproject.toml, setup.py, setup.cfg, requirements*.txt, tox.ini, environment.yml, and lock files when present.
 - Preserve existing behavior unless the source and target libraries require an intentional compatibility adjustment.
 - Run the provided validation commands. If no validation command was provided, discover and run the smallest relevant project tests or static checks available.
+- Avoid broad chained rewrite commands over the whole repository. Inspect the files in the migration plan and make focused edits.
 - Do not make unrelated refactors or formatting-only changes.
 - Finish only after verification by issuing exactly this command on its own:
   echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
@@ -262,6 +268,207 @@ def _derive_scopes(scopes: list[str], pymigbench_data: dict[str, Any] | None) ->
     return [file_record["path"] for file_record in pymigbench_data.get("files", []) or [] if file_record.get("path")]
 
 
+def _discover_validation_commands(project: Path) -> list[str]:
+    """Find small project-native validation commands for the agent to run."""
+    commands: list[str] = []
+    has_tests_dir = any((project / name).is_dir() for name in ("tests", "test"))
+    has_pytest_config = any((project / name).exists() for name in ("pytest.ini", "tox.ini", "setup.cfg"))
+    pyproject = project / "pyproject.toml"
+    if pyproject.exists() and "pytest" in pyproject.read_text(errors="replace").lower():
+        has_pytest_config = True
+    if has_tests_dir or has_pytest_config:
+        commands.append("python -m pytest")
+    if not commands and (project / "manage.py").exists():
+        commands.append("python manage.py test")
+    return commands
+
+
+def _dependency_files_with_mentions(project: Path, source: str, target: str) -> list[str]:
+    dependency_names = (
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "requirements.txt",
+        "requirements-dev.txt",
+        "requirements-test.txt",
+        "tox.ini",
+        "environment.yml",
+        "environment.yaml",
+        "Pipfile",
+    )
+    findings: list[str] = []
+    for name in dependency_names:
+        path = project / name
+        if not path.exists() or not path.is_file():
+            continue
+        text = path.read_text(errors="replace")
+        text_lower = text.lower()
+        mentions: list[str] = []
+        if source and source.lower() in text_lower:
+            mentions.append(f"source `{source}`")
+        if target and target.lower() in text_lower:
+            mentions.append(f"target `{target}`")
+        if mentions:
+            findings.append(f"{name}: {', '.join(mentions)}")
+    return findings
+
+
+def _render_agent_automation_context(
+    *,
+    context: PigContext | None,
+    project: Path,
+    source: str,
+    target: str,
+    test_commands: list[str],
+    discovered_test_commands: list[str],
+) -> str:
+    """Render the pre-agent automation plan that makes PIG outputs actionable."""
+    lines = [
+        "## Agent-owned automated migration plan",
+        "",
+        "The harness already performed the first PIG-style pass before this task reached you: "
+        "source API discovery, focused code slicing, target API candidate ranking, and validation command discovery. "
+        "You own the final decisions: inspect this evidence, edit the project, run checks, and repair failures.",
+        "",
+        f"Migration request: `{source}` -> `{target}`",
+        f"Project root: `{project}`",
+    ]
+    if context:
+        occurrence_count = len(context.occurrences)
+        file_count = len({occurrence.file_path for occurrence in context.occurrences})
+        complexity = "complex/project-level" if file_count > 3 or occurrence_count > 12 else "focused/API-level"
+        lines.extend(
+            [
+                f"Initial classification: {complexity}",
+                f"Discovered source occurrences: {occurrence_count} across {file_count} file(s)",
+            ]
+        )
+        grouped: dict[str, list[str]] = {}
+        for occurrence in context.occurrences:
+            grouped.setdefault(occurrence.file_path, []).append(
+                f"line {occurrence.line}: {occurrence.qualified_name or occurrence.api} | {occurrence.source_line.strip()}"
+            )
+        lines.extend(["", "Files to inspect/edit first:"])
+        if grouped:
+            for file_path, entries in list(grouped.items())[:12]:
+                lines.append(f"- `{file_path}`")
+                for entry in entries[:5]:
+                    lines.append(f"  - {entry}")
+                if len(entries) > 5:
+                    lines.append(f"  - ... {len(entries) - 5} more occurrence(s)")
+        else:
+            lines.append("- No direct source occurrences were discovered; inspect imports, dependency files, and project configuration.")
+
+        dependency_findings = _dependency_files_with_mentions(project, source, target)
+        lines.extend(["", "Dependency/config files that mention the migration libraries:"])
+        lines.extend(f"- {finding}" for finding in dependency_findings[:12]) if dependency_findings else lines.append(
+            "- No dependency/config file mentioned the source or target library."
+        )
+
+        lines.extend(["", "Top target API candidates from the automated matcher:"])
+        if context.candidates:
+            for candidate in context.candidates[:8]:
+                reason = "; ".join(candidate.reasons[:3]) or "ranked candidate"
+                lines.append(f"- `{candidate.api}` score={candidate.score}: {reason}")
+        else:
+            lines.append("- No target API candidates were ranked; infer replacements from target docs or installed API shape.")
+
+        lines.extend(["", "Focused code slices to review before editing:"])
+        if context.slices:
+            for code_slice in _dedupe_slices(context.slices)[:8]:
+                lines.extend(
+                    [
+                        f"### `{code_slice.file_path}` lines {code_slice.start_line}-{code_slice.end_line}",
+                        f"Reason: {code_slice.reason}",
+                        "```python",
+                        code_slice.code.rstrip(),
+                        "```",
+                    ]
+                )
+        else:
+            lines.append("- No code slices were prepared; run the helper slicing command if discovery looked incomplete.")
+        if context.warnings:
+            lines.extend(["", "Discovery warnings to resolve:"])
+            lines.extend(f"- {warning}" for warning in context.warnings[:8])
+
+    lines.extend(["", "Validation plan:"])
+    if test_commands:
+        origin = "provided by user/UI"
+        if discovered_test_commands and test_commands == discovered_test_commands:
+            origin = "auto-discovered from the project"
+        lines.append(f"- Validation commands ({origin}):")
+        lines.extend(f"  - `{command}`" for command in test_commands)
+    else:
+        lines.append("- No project-native test command was discovered. Run at least syntax/static checks and the migration verifier.")
+    lines.extend(
+        [
+            "",
+            "Agent decision rules:",
+            "- Use the source occurrences and slices as the edit map; do not treat them as optional background.",
+            "- If a source occurrence remains after edits, run the verifier and repair that exact file.",
+            "- Prefer project-native tests when available; otherwise run the static/API verifier and syntax checks.",
+            "- Keep edits inside the project root and avoid unrelated refactors.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _dedupe_slices(slices: tuple[Any, ...]) -> list[Any]:
+    unique: list[Any] = []
+    seen: set[tuple[str, int, int, str]] = set()
+    for code_slice in slices:
+        key = (code_slice.file_path, code_slice.start_line, code_slice.end_line, code_slice.code)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(code_slice)
+    return unique
+
+
+def _build_repair_task(
+    *,
+    project: Path,
+    source: str,
+    target: str,
+    report: VerificationReport,
+    strict_report: Path | None,
+    test_commands: list[str],
+) -> str:
+    """Build a focused repair request after strict verification fails."""
+    report_path = f"`{strict_report}`" if strict_report else "the in-memory strict verification report"
+    failures = {
+        "syntax_errors": report.syntax_errors,
+        "source_residue": report.source_residue,
+        "api_check_failures": report.api_check_failures,
+        "dependency_findings": report.dependency_findings,
+        "target_evidence": report.target_evidence,
+    }
+    return f"""Continue the same `{source}` -> `{target}` migration in this project and repair the strict verification failures.
+
+Project root:
+{project}
+
+Strict verification report source:
+{report_path}
+
+Verifier summary:
+```json
+{json.dumps(failures, indent=2, sort_keys=True)}
+```
+
+Repair requirements:
+- Fix every source residue file and API/static failure shown above.
+- Inspect dependency/config findings; replace source dependency declarations with target declarations when that is part of this migration.
+- Preserve already-correct target-library changes.
+- Avoid broad chained rewrite commands. Use focused file inspection and targeted edits.
+- Run these validation commands after the repair:
+{_format_list(test_commands)}
+- Run the migration verifier again if a helper command is available.
+- Finish only after verification by issuing exactly this command on its own:
+  echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+"""
+
+
 # fmt: off
 @app.command()
 def main(
@@ -280,6 +487,8 @@ def main(
     verify_only: bool = typer.Option(False, "--verify-only", help="Run migration static/API checks and exit without running the agent."),
     strict_static_check: bool = typer.Option(False, "--strict-static-check", help="Run strict static/API checks after the agent exits."),
     strict_report: Path | None = typer.Option(None, "--strict-report", help="Write static/API verification JSON to this path."),
+    auto_repair_attempts: int = typer.Option(1, "--auto-repair-attempts", min=0, help="Automatic repair passes to run when strict verification fails."),
+    discover_tests: bool = typer.Option(True, "--discover-tests/--no-discover-tests", help="Auto-discover project-native validation commands when none are provided."),
     scope: list[str] = typer.Option([], "-s", "--scope", help="File, directory, or symbol scope to prioritize. Repeatable."),
     test_command: list[str] = typer.Option([], "-T", "--test-command", help="Validation command to run after migration. Repeatable."),
     note: list[str] = typer.Option([], "--note", help="Extra migration requirement or constraint. Repeatable."),
@@ -325,9 +534,10 @@ def main(
         raise typer.BadParameter("Strategy must be one of: default, pig, pig-advisory.")
     api_changes = api_changes_from_pymigbench(pymigbench_data)
     pig_context_markdown = None
+    pig_context_obj: PigContext | None = None
     pig_helper_commands: dict[str, str] = {}
     if normalized_strategy == "pig-advisory":
-        pig_context = build_pig_context(
+        pig_context_obj = build_pig_context(
             project=project,
             source=source,
             target=target,
@@ -348,13 +558,13 @@ def main(
             strict_report=strict_report,
         )
         pig_context_markdown = render_pig_prompt_summary(
-            pig_context,
+            pig_context_obj,
             report_path=pig_report,
             helper_commands=pig_helper_commands,
         )
         if pig_report:
             pig_report.parent.mkdir(parents=True, exist_ok=True)
-            pig_report.write_text(json.dumps(pig_context.to_dict(), indent=2, sort_keys=True))
+            pig_report.write_text(json.dumps(pig_context_obj.to_dict(), indent=2, sort_keys=True))
     if verify_only:
         report = verify_project_migration(
             project=project.resolve(),
@@ -368,17 +578,28 @@ def main(
         if not report.passed:
             raise typer.Exit(1)
         return report
+    discovered_test_commands = _discover_validation_commands(project) if discover_tests and not test_command else []
+    effective_test_commands = test_command or discovered_test_commands
+    agent_automation_context = _render_agent_automation_context(
+        context=pig_context_obj,
+        project=project,
+        source=source,
+        target=target,
+        test_commands=effective_test_commands,
+        discovered_test_commands=discovered_test_commands,
+    )
     task = build_migration_task(
         project=project,
         source=source,
         target=target,
         scopes=scopes,
-        test_commands=test_command,
+        test_commands=effective_test_commands,
         notes=note,
         pymigbench_data=pymigbench_data,
         pymigbench_examples=pymigbench_examples,
         strategy=normalized_strategy,
         pig_context=pig_context_markdown,
+        agent_automation_context=agent_automation_context,
         pig_report=pig_report,
         strict_static_check=strict_static_check,
         strict_report=strict_report,
@@ -408,7 +629,7 @@ def main(
             "source": source,
             "target": target,
             "scope": scopes,
-            "test_command": test_command,
+            "test_command": effective_test_commands,
             "pymigbench_yaml": str(pymigbench_yaml) if pymigbench_yaml else UNSET,
             "pymigbench_dataset": str(pymigbench_dataset) if pymigbench_dataset else UNSET,
             "examples": examples,
@@ -417,6 +638,8 @@ def main(
             "pig_introspect_target": pig_introspect_target,
             "strict_static_check": strict_static_check,
             "strict_report": str(strict_report) if strict_report else UNSET,
+            "auto_repair_attempts": auto_repair_attempts,
+            "discover_tests": discover_tests,
         },
     })
     config = recursive_merge(*configs)
@@ -435,6 +658,28 @@ def main(
         )
         _emit_verification_report(report, strict_report)
         _print_verification_summary(report)
+        for attempt in range(1, auto_repair_attempts + 1):
+            if report.passed:
+                break
+            console.print(f"Strict verification failed; starting automatic repair pass {attempt}/{auto_repair_attempts}.")
+            repair_task = _build_repair_task(
+                project=project,
+                source=source,
+                target=target,
+                report=report,
+                strict_report=strict_report,
+                test_commands=effective_test_commands,
+            )
+            agent.run(repair_task)
+            report = verify_project_migration(
+                project=project,
+                source=source,
+                target=target,
+                scopes=scopes,
+                api_changes=api_changes,
+            )
+            _emit_verification_report(report, strict_report)
+            _print_verification_summary(report)
         if not report.passed:
             raise typer.Exit(1)
     if (output_path := config.get("agent", {}).get("output_path")):

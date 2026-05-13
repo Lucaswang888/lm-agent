@@ -54,7 +54,13 @@ class VerificationReport:
 
     @property
     def passed(self) -> bool:
-        return not self.syntax_errors and not self.source_residue and not self.api_check_failures
+        dependency_failures = [finding for finding in self.dependency_findings if "still mentions" in finding]
+        return (
+            not self.syntax_errors
+            and not self.source_residue
+            and not self.api_check_failures
+            and not dependency_failures
+        )
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
@@ -100,9 +106,12 @@ def verify_project_migration(
         if not path.exists() or not path.is_file():
             continue
         text = path.read_text(errors="replace")
-        if source and source in text and target not in text:
+        text_lower = text.lower()
+        source_lower = source.lower()
+        target_lower = target.lower()
+        if source and source_lower in text_lower and target_lower not in text_lower:
             dependency_findings.append(f"{dep_file}: still mentions {source!r} without {target!r}")
-        elif target and target in text:
+        elif target and target_lower in text_lower:
             dependency_findings.append(f"{dep_file}: mentions target {target!r}")
 
     return VerificationReport(
@@ -124,7 +133,7 @@ def _framework_specific_failures(rel: str, text: str, target: str) -> list[str]:
 
 def _has_source_residue(text: str, source: str, source_apis: set[str]) -> bool:
     code_text = _strip_strings_and_comments(text)
-    if source and re.search(rf"\b(import|from)\s+{re.escape(source)}\b", code_text):
+    if source and re.search(rf"\b(import|from)\s+{re.escape(source)}\b", code_text, flags=re.IGNORECASE):
         return True
     for api in source_apis:
         if "." in api and re.search(rf"\b{re.escape(api)}\b", code_text):
@@ -134,7 +143,7 @@ def _has_source_residue(text: str, source: str, source_apis: set[str]) -> bool:
 
 def _has_target_evidence(text: str, target: str, target_apis: set[str]) -> bool:
     code_text = _strip_strings_and_comments(text)
-    if target and re.search(rf"\b(import|from)\s+{re.escape(target)}\b", code_text):
+    if target and re.search(rf"\b(import|from)\s+{re.escape(target)}\b", code_text, flags=re.IGNORECASE):
         return True
     for api in target_apis:
         if "." in api and re.search(rf"\b{re.escape(api)}\b", code_text):

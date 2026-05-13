@@ -91,8 +91,46 @@ def build_pig_context(
 
 
 def render_pig_context(context: PigContext) -> str:
-    """Render a short PIG summary for the migration agent prompt."""
-    return render_pig_prompt_summary(context)
+    """Render the full PIG context for tests, reports, and offline inspection."""
+    lines = [
+        "## PIG-style migration context",
+        "",
+        f"Source library: `{context.source}`",
+        f"Target library: `{context.target}`",
+        f"API checklist items: {len(context.api_changes)}",
+        f"Source API occurrences found locally: {len(context.occurrences)}",
+        f"Code slices prepared: {len(context.slices)}",
+        "",
+        "### Target API candidates",
+        *_render_candidates(list(context.candidates)),
+        "",
+        "### API checklist",
+    ]
+    if context.api_changes:
+        for change in context.api_changes:
+            source = ", ".join(change.source_apis) or "unknown"
+            target = ", ".join(change.target_apis) or "unknown"
+            properties = ", ".join(change.properties) or "none"
+            lines.append(f"- `{change.file_path}` line {change.line}: {source} -> {target}; properties: {properties}")
+    else:
+        lines.append("- No benchmark API checklist was provided.")
+
+    lines.extend(["", "### Focused code slices"])
+    compact_slices = _compact_prompt_slices(list(context.slices))
+    if compact_slices:
+        for code_slice, reasons in compact_slices[:20]:
+            lines.extend(
+                [
+                    f"#### `{code_slice.file_path}` lines {code_slice.start_line}-{code_slice.end_line}",
+                    "Reasons: " + "; ".join(reasons),
+                    "```python",
+                    code_slice.code.rstrip(),
+                    "```",
+                ]
+            )
+    else:
+        lines.append("- No code slices were prepared.")
+    return "\n".join(lines)
 
 
 def render_pig_prompt_summary(
@@ -103,7 +141,7 @@ def render_pig_prompt_summary(
 ) -> str:
     """Render concise PIG guidance while leaving details to callable tools."""
     lines = [
-        "## PIG-style migration support",
+        "## PIG-style migration context and support",
         "",
         "Use PIG as an automated helper workflow, not as a full prompt dump. "
         "Call the helper commands below when you need API discovery, code slices, "
