@@ -11,6 +11,7 @@ from typing import Annotated, Any
 import typer
 import yaml
 
+from minisweagent.migration.checker import CheckContext, run_default_pipeline
 from minisweagent.migration.context import api_changes_from_pymigbench, build_pig_context
 from minisweagent.migration.verification import verify_project_migration
 
@@ -212,6 +213,41 @@ def candidates(
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(text)
     typer.echo(text)
+
+
+@app.command()
+def check(
+    project: Annotated[Path, typer.Option("--project", "-p", help="Project root to verify.")],
+    source: Annotated[str, typer.Option("--source", help="Source library/package.")],
+    target: Annotated[str, typer.Option("--target", help="Target library/package.")],
+    layers: Annotated[str, typer.Option("--layers", help="Comma-separated checker layers, e.g. L0,L1,L2,L3.")] = "L0,L1,L2,L3",
+    pymigbench_yaml: Annotated[Path | None, typer.Option("--pymigbench-yaml", help="Optional benchmark ground truth YAML.")] = None,
+    scope: Annotated[list[str], typer.Option("--scope", "-s", help="Priority scope. Repeatable.")] = [],
+    output: Annotated[Path | None, typer.Option("--output", "-o", help="Write CheckerReport JSON to this path.")] = None,
+    enable_l4: Annotated[bool, typer.Option("--enable-l4", help="Enable optional L4 behaviour-diff hook.")] = False,
+    test_command: Annotated[list[str], typer.Option("--test-command", help="Validation command to run in L3. Repeatable.")] = [],
+) -> None:
+    """Run the multi-layer checker pipeline and return CheckerReport JSON."""
+    pymigbench_data = _load_pymigbench_yaml(pymigbench_yaml)
+    layer_names = tuple(layer.strip().upper() for layer in layers.split(",") if layer.strip())
+    ctx = CheckContext(
+        project=project.resolve(),
+        source=source,
+        target=target,
+        scopes=tuple(scope),
+        api_changes=tuple(api_changes_from_pymigbench(pymigbench_data)),
+        layers_to_run=layer_names,
+        enable_l4=enable_l4,
+        test_commands=tuple(test_command),
+    )
+    report = run_default_pipeline(ctx)
+    payload = report.to_dict()
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+    if not report.passed:
+        raise typer.Exit(1)
 
 
 @app.command()

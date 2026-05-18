@@ -45,6 +45,11 @@ dependencies = [
     "prompt_toolkit",
     "datasets",
     "openai != 1.100.0,!=1.100.1",  # https://github.com/SWE-agent/mini-swe-agent/issues/446
+    "pyflakes >= 3.2",
+    "johnnydep >= 1.20.4",
+    "pytest-json-report >= 1.5",
+    "coverage[toml] >= 7.5",
+    "libcst >= 1.4",
 ]
 
 [project.optional-dependencies]

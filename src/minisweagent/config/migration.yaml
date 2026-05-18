@@ -16,9 +16,24 @@ agent:
     3. Use the PIG helper commands when you need API discovery, code slices, target API candidates, or static/API verification.
     4. Update imports, call sites, dependency declarations, and tests.
     5. Run the requested validation commands, or discover the smallest relevant checks when none are provided.
-    6. Run the PIG/static verifier after edits when the task provides that command, then fix failures caused by the migration.
+    6. Run the automated checker after edits when the task provides that command, then fix failures caused by the migration.
     7. Finish by issuing this exact command on its own:
        `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+
+    ## Automated checker feedback protocol (v2)
+
+    After every batch of edits, call the `check` helper when it is available. It returns a structured CheckerReport JSON with `summary`, `failures`, `passes`, `coverage`, and `escalation`.
+
+    For each entry in `failures[]`:
+    - If `severity=blocker`, fix it before any other edit.
+    - Inspect `suggested_fix.edit_targets` first; each value is a `path:line` location to read before editing.
+    - When `suggested_fix.kind=rename_import`, prefer the first `candidates[]` entry unless local evidence contradicts it.
+    - When `suggested_fix.kind=fix_test_regression`, run the failing test or command in isolation before broad changes.
+    - Quote `rule_ref` in your reasoning when applying a suggested checker fix.
+
+    If `coverage.coverage_ratio < 0.8` and `coverage.skipped_reason` is not null, add or run at least one smoke test that imports each migrated module and exercises a happy path before claiming completion.
+
+    Never issue `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` while `summary.passed == false` or `summary.layer_failed != null`.
 
     ## Command execution rules
 

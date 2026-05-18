@@ -436,12 +436,20 @@ def _build_repair_task(
 ) -> str:
     """Build a focused repair request after strict verification fails."""
     report_path = f"`{strict_report}`" if strict_report else "the in-memory strict verification report"
+    checker_report = report.checker_report or {}
+    checker_failures = checker_report.get("failures") if isinstance(checker_report, dict) else None
+    blockers = [
+        failure
+        for failure in checker_failures or []
+        if isinstance(failure, dict) and failure.get("severity") == "blocker"
+    ]
     failures = {
         "syntax_errors": report.syntax_errors,
         "source_residue": report.source_residue,
         "api_check_failures": report.api_check_failures,
         "dependency_findings": report.dependency_findings,
         "target_evidence": report.target_evidence,
+        "checker_blockers": blockers,
     }
     return f"""Continue the same `{source}` -> `{target}` migration in this project and repair the strict verification failures.
 
@@ -457,7 +465,9 @@ Verifier summary:
 ```
 
 Repair requirements:
-- Fix every source residue file and API/static failure shown above.
+- Fix every blocker first. If `checker_blockers[].suggested_fix.edit_targets` is present, inspect those locations before editing.
+- If `suggested_fix.kind=rename_import`, try the first candidate unless file evidence contradicts it.
+- Quote the `rule_ref` in your reasoning when applying a checker-suggested fix.
 - Inspect dependency/config findings; replace source dependency declarations with target declarations when that is part of this migration.
 - Preserve already-correct target-library changes.
 - Avoid broad chained rewrite commands. Use focused file inspection and targeted edits.
@@ -715,8 +725,10 @@ def _build_pig_helper_commands(
     for scope in scopes:
         common.extend(["--scope", scope])
     verify = base + ["verify"] + common
+    check = base + ["check"] + common + ["--layers", "L0,L1,L2,L3"]
     if strict_report:
         verify.extend(["--output", str(strict_report)])
+        check.extend(["--output", str(strict_report)])
     return {
         "discover source API usage": _render_shell_command(base + ["discover"] + common, pythonpath=pythonpath),
         "retrieve focused code slices": _render_shell_command(
@@ -725,6 +737,7 @@ def _build_pig_helper_commands(
         ),
         "rank target API candidates": _render_shell_command(base + ["candidates"] + common, pythonpath=pythonpath),
         "run static/API verifier": _render_shell_command(verify, pythonpath=pythonpath),
+        "run automated checker": _render_shell_command(check, pythonpath=pythonpath),
     }
 
 

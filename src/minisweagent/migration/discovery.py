@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import warnings
 from pathlib import Path
 
 from minisweagent.migration.pig_models import ApiChange, ApiOccurrence
@@ -45,7 +46,9 @@ def iter_python_files(project: Path, scopes: list[str] | None = None) -> list[Pa
 def parse_python_file(path: Path) -> ast.Module | None:
     """Parse a Python file, returning None when the file is not parseable."""
     try:
-        return ast.parse(path.read_text(errors="replace"), filename=str(path))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            return ast.parse(path.read_text(errors="replace"), filename=str(path))
     except SyntaxError:
         return None
 
@@ -57,10 +60,26 @@ def discover_api_occurrences(
     api_changes: list[ApiChange] | None = None,
 ) -> tuple[list[ApiOccurrence], list[str]]:
     """Find source-library imports, calls, and attributes in project files."""
+    return discover_api_occurrences_in_files(
+        project=project,
+        source=source,
+        files=iter_python_files(project, scopes),
+        api_changes=api_changes,
+    )
+
+
+def discover_api_occurrences_in_files(
+    *,
+    project: Path,
+    source: str,
+    files: list[Path],
+    api_changes: list[ApiChange] | None = None,
+) -> tuple[list[ApiOccurrence], list[str]]:
+    """Find source-library API occurrences in an explicit Python-source file list."""
     warnings: list[str] = []
     occurrences: list[ApiOccurrence] = []
     wanted_apis = _wanted_source_apis(api_changes or [])
-    for path in iter_python_files(project, scopes):
+    for path in files:
         tree = parse_python_file(path)
         if tree is None:
             warnings.append(f"Could not parse {path.relative_to(project)}; skipped AST discovery for that file.")
