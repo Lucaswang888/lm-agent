@@ -3,6 +3,7 @@
 """Run mini-SWE-agent as a structured Python library migration agent."""
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -283,6 +284,86 @@ def _discover_validation_commands(project: Path) -> list[str]:
     return commands
 
 
+def _discover_ecosystem_validation_commands(project: Path) -> list[str]:
+    """Find ecosystem-native install/build gates that prove dependency migrations are reproducible."""
+    commands: list[str] = []
+    package_json = project / "package.json"
+    if package_json.exists() and package_json.is_file():
+        if (project / "package-lock.json").exists():
+            commands.append("npm ci --legacy-peer-deps --ignore-scripts")
+        else:
+            commands.append("npm install --legacy-peer-deps --ignore-scripts")
+        scripts = _package_json_scripts(package_json)
+        if "build" in scripts:
+            commands.append("npm run build")
+        return commands
+    return commands
+
+
+def _package_json_scripts(package_json: Path) -> dict[str, str]:
+    try:
+        data = json.loads(package_json.read_text(errors="replace"))
+    except json.JSONDecodeError:
+        return {}
+    scripts = data.get("scripts")
+    return scripts if isinstance(scripts, dict) else {}
+
+
+def _run_project_validation_commands(
+    project: Path,
+    commands: list[str],
+    *,
+    timeout_seconds: int = 300,
+) -> list[dict[str, object]]:
+    """Run validation commands and return compact evidence for the cross-review gate."""
+    reports: list[dict[str, object]] = []
+    for command in _dedupe_strings(commands):
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                cwd=project,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+                encoding="utf-8",
+                errors="replace",
+            )
+            output = result.stdout + result.stderr
+            reports.append(
+                {
+                    "command": command,
+                    "returncode": result.returncode,
+                    "passed": result.returncode == 0,
+                    "output_tail": "\n".join(output.splitlines()[-80:]),
+                }
+            )
+        except subprocess.TimeoutExpired as exc:
+            output = (exc.stdout or "") + (exc.stderr or "")
+            reports.append(
+                {
+                    "command": command,
+                    "returncode": None,
+                    "passed": False,
+                    "output_tail": "\n".join(output.splitlines()[-80:]),
+                    "error": f"timed out after {timeout_seconds}s",
+                }
+            )
+    return reports
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
 def _dependency_files_with_mentions(project: Path, source: str, target: str) -> list[str]:
     dependency_names = (
         "pyproject.toml",
@@ -479,6 +560,268 @@ Repair requirements:
 """
 
 
+def _build_validation_repair_task(
+    *,
+    project: Path,
+    source: str,
+    target: str,
+    report: VerificationReport,
+    strict_report: Path | None,
+    validation_reports: list[dict[str, object]],
+    repair_attempt: int,
+    test_commands: list[str],
+) -> str:
+    """Build a repair request from deterministic checker and project validation evidence."""
+    report_path = f"`{strict_report}`" if strict_report else "the in-memory strict verification report"
+    evidence = {
+        "repair_attempt": repair_attempt,
+        "strict_report_path": str(strict_report) if strict_report else None,
+        "strict_report": report.to_dict(),
+        "project_validation": validation_reports,
+    }
+    return f"""Continue the same `{source}` -> `{target}` migration and repair deterministic validation failures before cross-review.
+
+Project root:
+{project}
+
+Repair attempt: {repair_attempt}
+Strict verification report source: {report_path}
+
+Evidence:
+```json
+{json.dumps(evidence, indent=2, sort_keys=True)}
+```
+
+Repair requirements:
+- Fix strict checker blockers, source residue, dependency findings, and failed project validation commands.
+- If this is an npm/TypeScript project, keep `package.json` and lockfiles consistent; regenerate lockfiles when dependency declarations change.
+- Preserve already-correct target-library changes.
+- Run these validation commands after the repair:
+{_format_list(test_commands)}
+- Run the migration verifier again if a helper command is available.
+- Finish only after verification by issuing exactly this command on its own:
+  echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+"""
+
+
+def _build_cross_review_repair_task(
+    *,
+    project: Path,
+    source: str,
+    target: str,
+    cross_review_report: dict[str, object],
+    validation_reports: list[dict[str, object]],
+    repair_attempt: int,
+    test_commands: list[str],
+) -> str:
+    """Build a repair request from independent cross-review findings."""
+    evidence = {
+        "cross_review_report": cross_review_report,
+        "project_validation": validation_reports,
+    }
+    return f"""Repair the library migration using the independent cross-review findings.
+
+Project root:
+{project}
+
+Migration:
+{source} -> {target}
+
+Repair attempt: {repair_attempt}
+
+Cross-review evidence:
+```json
+{json.dumps(evidence, indent=2, sort_keys=True)}
+```
+
+Repair requirements:
+- Treat `blockers`, `missing_checks`, and `rationale` as concrete repair inputs.
+- If the reviewer found manifest/lockfile inconsistency, update dependency manifests and lockfiles together.
+- If the reviewer found checker coverage gaps, add or run ecosystem-native validation that proves this migration.
+- Preserve already-correct target-library changes.
+- Run these validation commands after the repair:
+{_format_list(test_commands)}
+- Finish only after verification by issuing exactly this command on its own:
+  echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+"""
+
+
+def _build_cross_review_task(
+    *,
+    project: Path,
+    source: str,
+    target: str,
+    strict_report: Path | None,
+    pig_report: Path | None,
+    verification_report: VerificationReport,
+    validation_reports: list[dict[str, object]],
+) -> str:
+    """Build the second-agent read-only review task."""
+    evidence = {
+        "strict_report_path": str(strict_report) if strict_report else None,
+        "pig_report_path": str(pig_report) if pig_report else None,
+        "strict_report": verification_report.to_dict(),
+        "project_validation": validation_reports,
+    }
+    return f"""Cross-review this completed library migration.
+
+Migration: {source} -> {target}
+Project root: {project}
+
+Do not edit files. Do not run destructive commands. Your job is independent verification only.
+
+Review questions:
+1. What ecosystem is this project using?
+2. Did the migration update code, dependency manifests, and lockfiles consistently?
+3. Did the strict checker inspect relevant files for this ecosystem?
+4. Do the project-native validation command results prove the migration is reproducible?
+5. Is there any false-positive risk in the current "passed" status?
+
+Hard verdict rules:
+- If any project_validation entry has passed=false, verdict must be "fail".
+- If package/dependency manifests and lockfiles are inconsistent, verdict must be "fail".
+- If the strict checker inspected 0 relevant files for this ecosystem, mention that as a risk.
+- Submit only a JSON object with keys:
+  verdict ("pass" or "fail"), confidence, ecosystem, blockers, missing_checks, rationale.
+- Your final bash command must print `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on the first line and the JSON object on the following lines.
+  Example:
+  `printf '%s\n%s\n' 'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT' '{{"verdict":"fail","confidence":"high","ecosystem":"npm","blockers":[],"missing_checks":[],"rationale":""}}'`
+
+Evidence:
+```json
+{json.dumps(evidence, indent=2, sort_keys=True)}
+```
+
+Current git diff:
+```diff
+{_git_diff(project)}
+```
+"""
+
+
+def _run_cross_review_agent(
+    *,
+    model: Any,
+    env: Any,
+    agent_config: dict[str, Any],
+    project: Path,
+    source: str,
+    target: str,
+    strict_report: Path | None,
+    pig_report: Path | None,
+    verification_report: VerificationReport,
+    validation_reports: list[dict[str, object]],
+) -> dict[str, object]:
+    task = _build_cross_review_task(
+        project=project,
+        source=source,
+        target=target,
+        strict_report=strict_report,
+        pig_report=pig_report,
+        verification_report=verification_report,
+        validation_reports=validation_reports,
+    )
+    verifier_agent = get_agent(model, env, _cross_review_agent_config(agent_config), default_type="interactive")
+    result = verifier_agent.run(task)
+    return _parse_cross_review_submission(str(result.get("submission", "")))
+
+
+def _cross_review_agent_config(agent_config: dict[str, Any]) -> dict[str, Any]:
+    config = dict(agent_config)
+    config["system_template"] = (
+        "You are an independent migration verifier reviewing another agent's completed work. "
+        "Be skeptical, evidence-driven, and read-only. You may run non-destructive inspection "
+        "or validation commands, but you must not edit files. If required evidence is missing "
+        "or any hard validation command failed, return verdict fail. Submit your verdict by "
+        "printing COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT on the first line and the JSON verdict "
+        "on the following lines."
+    )
+    config["instance_template"] = "{{task}}"
+    config["confirm_exit"] = False
+    config.pop("output_path", None)
+    return config
+
+
+def _parse_cross_review_submission(submission: str) -> dict[str, object]:
+    text = submission.strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            data = json.loads(text[start : end + 1])
+            verdict = str(data.get("verdict", "")).lower()
+            data["verdict"] = verdict
+            data["passed"] = verdict == "pass"
+            return data
+        except json.JSONDecodeError:
+            pass
+    lowered = text.lower()
+    if "verdict: pass" in lowered:
+        return {"verdict": "pass", "passed": True, "raw_submission": submission}
+    if "verdict: fail" in lowered:
+        return {"verdict": "fail", "passed": False, "raw_submission": submission}
+    return {
+        "verdict": "fail",
+        "passed": False,
+        "raw_submission": submission,
+        "blockers": ["Verifier agent did not return a parseable verdict."],
+    }
+
+
+def _git_diff(project: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--", "."],
+            cwd=project,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception as exc:
+        return f"Could not read git diff: {exc}"
+    diff = result.stdout or result.stderr
+    if len(diff) > 60000:
+        return diff[:60000] + "\n... diff truncated ..."
+    return diff
+
+
+def _working_tree_snapshot(project: Path) -> str:
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--", "."],
+            cwd=project,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        status = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=project,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception as exc:
+        return f"unavailable:{exc}"
+    return f"{status.stdout}\n{diff.stdout}"
+
+
+def _has_failed_validation(validation_reports: list[dict[str, object]]) -> bool:
+    return any(report.get("passed") is False for report in validation_reports)
+
+
+def _option_enabled(value: object) -> bool:
+    return value if isinstance(value, bool) else False
+
+
+def _print_cross_review_stats(stats: dict[str, object]) -> None:
+    console.print("Cross-review collaboration stats:")
+    console.print(json.dumps(stats, indent=2, sort_keys=True))
+
+
 # fmt: off
 @app.command()
 def main(
@@ -498,6 +841,7 @@ def main(
     strict_static_check: bool = typer.Option(False, "--strict-static-check", help="Run strict static/API checks after the agent exits."),
     strict_report: Path | None = typer.Option(None, "--strict-report", help="Write static/API verification JSON to this path."),
     auto_repair_attempts: int = typer.Option(1, "--auto-repair-attempts", min=0, help="Automatic repair passes to run when strict verification fails."),
+    cross_review: bool = typer.Option(False, "--cross-review/--no-cross-review", help="Run an independent read-only verifier agent and ecosystem validation gate after migration."),
     discover_tests: bool = typer.Option(True, "--discover-tests/--no-discover-tests", help="Auto-discover project-native validation commands when none are provided."),
     scope: list[str] = typer.Option([], "-s", "--scope", help="File, directory, or symbol scope to prioritize. Repeatable."),
     test_command: list[str] = typer.Option([], "-T", "--test-command", help="Validation command to run after migration. Repeatable."),
@@ -649,6 +993,7 @@ def main(
             "strict_static_check": strict_static_check,
             "strict_report": str(strict_report) if strict_report else UNSET,
             "auto_repair_attempts": auto_repair_attempts,
+            "cross_review": _option_enabled(cross_review),
             "discover_tests": discover_tests,
         },
     })
@@ -658,6 +1003,7 @@ def main(
     env = get_environment(config.get("environment", {}), default_type="local")
     agent = get_agent(model, env, config.get("agent", {}), default_type="interactive")
     agent.run(task)
+    report: VerificationReport | None = None
     if strict_static_check:
         report = verify_project_migration(
             project=project,
@@ -692,6 +1038,86 @@ def main(
             _print_verification_summary(report)
         if not report.passed:
             raise typer.Exit(1)
+    if _option_enabled(cross_review):
+        validation_commands = _dedupe_strings(effective_test_commands + _discover_ecosystem_validation_commands(project))
+        collaboration_stats: dict[str, object] = {
+            "pre_review_repair_attempts": 0,
+            "cross_review_iterations": 0,
+            "cross_review_repair_attempts": 0,
+            "stop_reason": None,
+        }
+        while True:
+            if report is None:
+                report = verify_project_migration(
+                    project=project,
+                    source=source,
+                    target=target,
+                    scopes=scopes,
+                    api_changes=api_changes,
+                )
+                _emit_verification_report(report, strict_report)
+                _print_verification_summary(report)
+            validation_reports = _run_project_validation_commands(project, validation_commands)
+            if _has_failed_validation(validation_reports) or not report.passed:
+                collaboration_stats["pre_review_repair_attempts"] = int(collaboration_stats["pre_review_repair_attempts"]) + 1
+                before_repair = _working_tree_snapshot(project)
+                repair_task = _build_validation_repair_task(
+                    project=project,
+                    source=source,
+                    target=target,
+                    report=report,
+                    strict_report=strict_report,
+                    validation_reports=validation_reports,
+                    repair_attempt=int(collaboration_stats["pre_review_repair_attempts"]),
+                    test_commands=validation_commands,
+                )
+                agent.run(repair_task)
+                after_repair = _working_tree_snapshot(project)
+                if after_repair == before_repair:
+                    collaboration_stats["stop_reason"] = "pre_review_repair_made_no_changes"
+                    _print_cross_review_stats(collaboration_stats)
+                    raise typer.Exit(1)
+                report = None
+                continue
+            collaboration_stats["cross_review_iterations"] = int(collaboration_stats["cross_review_iterations"]) + 1
+            cross_review_report = _run_cross_review_agent(
+                model=model,
+                env=env,
+                agent_config=config.get("agent", {}),
+                project=project,
+                source=source,
+                target=target,
+                strict_report=strict_report,
+                pig_report=pig_report,
+                verification_report=report,
+                validation_reports=validation_reports,
+            )
+            console.print("Cross-review verifier report:")
+            console.print(json.dumps(cross_review_report, indent=2, sort_keys=True))
+            if cross_review_report.get("passed"):
+                collaboration_stats["stop_reason"] = "cross_review_passed"
+                _print_cross_review_stats(collaboration_stats)
+                break
+            collaboration_stats["cross_review_repair_attempts"] = int(
+                collaboration_stats["cross_review_repair_attempts"]
+            ) + 1
+            before_repair = _working_tree_snapshot(project)
+            repair_task = _build_cross_review_repair_task(
+                project=project,
+                source=source,
+                target=target,
+                cross_review_report=cross_review_report,
+                validation_reports=validation_reports,
+                repair_attempt=int(collaboration_stats["cross_review_repair_attempts"]),
+                test_commands=validation_commands,
+            )
+            agent.run(repair_task)
+            after_repair = _working_tree_snapshot(project)
+            if after_repair == before_repair:
+                collaboration_stats["stop_reason"] = "cross_review_repair_made_no_changes"
+                _print_cross_review_stats(collaboration_stats)
+                raise typer.Exit(1)
+            report = None
     if (output_path := config.get("agent", {}).get("output_path")):
         console.print(f"Saved trajectory to [bold green]'{output_path}'[/bold green]")
     return agent

@@ -538,6 +538,7 @@ def _run_migration_request(
     args.extend(["--pig-report", str(pig_report)])
     args.extend(["--strict-report", str(strict_report)])
     args.append("--strict-static-check")
+    args.append("--cross-review")
     args.extend(["--auto-repair-attempts", "1"])
     if resolved_model := _default_migration_model():
         args.extend(["--model", resolved_model])
