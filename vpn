@@ -1,0 +1,8 @@
+梯子订阅https://www.xmrth.lol/auth/register?code=eq3ung
+
+cd ~/Downloads
+chmod +x FlClash-0.8.92-linux-amd64.AppImage
+./FlClash-0.8.92-linux-amd64.AppImage --appimage-extract
+cd squashfs-root
+./AppRun
+
