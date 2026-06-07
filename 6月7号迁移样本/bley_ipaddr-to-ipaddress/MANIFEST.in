@@ -1,0 +1,13 @@
+include *.conf
+include *.example
+include *.1
+include bley.service
+include bley.spec
+include bley.logcheck
+include CHANGELOG.md
+include README.md
+include requirements.txt
+include Makefile
+include test/*.py
+include test/*.conf.in
+include test/whitelist_*
